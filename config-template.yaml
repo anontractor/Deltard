@@ -1,0 +1,12 @@
+TIMECARD_SITE: ""
+TIMECARD_CONFIG: ""
+LOGIN_USERNAME: ""
+LOGIN_PASSWORD: ""
+
+# Token code info
+TOKEN_PREFIX: ""
+TOKEN_POSTFIX: ""
+
+# Deltek table info
+DELTEK_PROJECT_ID: ""
+DELTEK_PAY_TYPE: ""
