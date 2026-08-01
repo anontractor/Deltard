@@ -1,12 +1,92 @@
-TIMECARD_SITE: ""
-TIMECARD_CONFIG: ""
-LOGIN_USERNAME: ""
-LOGIN_PASSWORD: ""
+# Non-secret settings. Fill this out and rename to config.yaml.
+# Credentials go in secrets.env (see secrets.env-template).
+UNANET_BASE: "https://<yourcompany>.unanet.biz/<tenant>"
 
-# Token code info
-TOKEN_PREFIX: ""
-TOKEN_POSTFIX: ""
+# The timesheet row to fill: matched by PROJECT cell prefix, sanity-checked
+# against the pay code.
+UNANET_PROJECT: ""
+UNANET_PAYCODE: "****REG"
 
-# Deltek table info
-DELTEK_PROJECT_ID: ""
-DELTEK_PAY_TYPE: ""
+HOURS_PER_DAY: "8"
+
+# Weekdays to skip when backfilling (company observed holidays).
+HOLIDAYS: []
+
+# ---------------------------------------------------------------------------
+# Failure notifications (see unanet/notify.py)
+# ---------------------------------------------------------------------------
+NOTIFY:
+  channel: ntfy            # ntfy | email | none
+  notify_on_success: true  # also ping on success, so silence means "didn't run"
+  ntfy:
+    server: "https://ntfy.sh"
+    # Topic lives in secrets.env as NTFY_TOPIC — it is the only access control
+    # ntfy has, so use a long random string.
+  email:
+    to: ""
+    smtp_host: "smtp.gmail.com"
+    smtp_port: 587
+    # SMTP_USER / SMTP_PASSWORD in secrets.env (Gmail: an App Password).
+
+# Optional dead-man's switch: set HEALTHCHECK_URL in secrets.env.
+
+camera:
+  index: 0            # cv2.VideoCapture device index
+  width: 1920
+  height: 1080
+  backend: dshow      # dshow | msmf | any  (Windows: dshow is most reliable)
+  warmup_frames: 3    # frames to discard after opening (auto-exposure settle)
+  # Optional sensor overrides. Leave empty to let the camera auto-expose (best
+  # in most cases). To force a brighter/longer exposure for a static token in
+  # dim light, e.g.:  controls: {auto_exposure: 0.25, exposure: -3, gain: 64}
+  controls: {}
+
+detector:
+  mode: segment       # "detect" (box) | "segment" (mask -> orientation -> de-skew)
+  # box detector (mode: detect)
+  weights: models/screen_detector.pt
+  imgsz: 896
+  conf: 0.20          # low: prefer recall, then filter/vote downstream
+  iou: 0.45
+  min_box_area_frac: 0.0005
+  device: auto           # 0 for first CUDA GPU, or "cpu"
+  # segmentation detector (mode: segment) — de-skews tilted/diagonal tokens.
+  # Runs on a square crop the box detector localizes (seg data is close-ups, so
+  # the token must fill the crop). seg_imgsz 640 beats higher here.
+  seg_weights: models/screen_seg_robust.pt
+  seg_imgsz: 640
+  seg_conf: 0.18
+  seg_crop_pad: 2.75    # square crop side as a multiple of the box's larger side
+
+# Canonical (de-skewed) screen size the digits get warped into.
+# Must match the stage-2 training crops (build_digit_dataset / gen_synth: 384x160)
+# or the digits reach the detector with systematically wrong proportions.
+canonical:
+  width: 384
+  height: 160
+  inflate_scale: 1.08  # expand the refined quad slightly before warping
+
+# Digit decode
+decode:
+  method: detector     # "detector" (trained stage-2 YOLO) | "classical" (seven-seg)
+  expected_digits: 6
+  auto_gain: true      # normalize dim crops before the detector (helps low light)
+  # classical-only:
+  seg_on_thresh: 0.60
+  invert: true         # RSA LCD is dark digits on a light background.
+
+# Stage-2 digit detector (method: detector)
+digit_detector:
+  weights: models/digit_detector_v2.pt
+  imgsz: 384
+  conf: 0.30
+  iou: 0.45
+  device: auto
+  min_digit_conf: 0.40 # reject the frame if any kept digit is below this
+
+# Temporal stability: publish a code only once it repeats across frames.
+stability:
+  history: 12          # frames kept in the voting buffer (~1s at 12 FPS)
+  need_matches: 8      # of the last `need_window` frames...
+  need_window: 10      # ...this many must agree before we trust the reading
+  timeout_seconds: 20  # give up if no stable code within this long

@@ -1,4 +1,5 @@
 
+from datetime import datetime
 from logger import logger
 
 import asyncio
@@ -10,6 +11,9 @@ from utils import load_config
 CONFIG_PATH = "config.yaml"
 
 async def main():
+    if datetime.now().weekday() >= 5:
+        return
+
     config = load_config(CONFIG_PATH)
     start_url = config.get("TIMECARD_SITE")
 
@@ -43,6 +47,7 @@ async def main():
 
             else:
                 logger.warning("No handler matched the current page.")
+                await asyncio.sleep(1000)
                 break
 
         # await browser.close()

@@ -175,3 +175,12 @@ cython_debug/
 
 # Project secrets
 config.yaml
+
+# Deltard secrets
+secrets.env
+automation.log
+browser_profile/
+last_failure.png
+
+# JetBrains IDE
+.idea/

@@ -1,59 +1,25 @@
+"""Read the current RSA SecurID code using the vendored rsa_reader pipeline.
 
-import time
+The rsa_reader package (copied from the rsa-reader project) runs a 3-stage
+YOLO pipeline with temporal voting: it only returns a code once 8 of the last
+10 decoded frames agree, so failures surface as timeouts rather than wrong
+codes. Returns the bare 6-digit code; PIN prefix/postfix are applied by the
+caller from secrets.env.
 
-import cv2
-import numpy as np
-import torch
-from ultralytics import YOLO
+The reader instance is cached so retries within one run don't reload models.
+"""
 
 from logger import logger
+from rsa_reader import RSATokenReader, load_config
+
+_reader = None
 
 
-def get_token_code():
-    if torch.cuda.is_available():
-        torch.cuda.set_device(0)
+def get_token_code() -> str:
+    global _reader
+    if _reader is None:
+        _reader = RSATokenReader(load_config())
 
-    trained = YOLO(r'./model/rsa_token_reader_model.pt', task='detect')
-
-    # Initialize the webcam
-    video_capture = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    time.sleep(1)  # Give the webcam time to initialize
-
-    # Check if the webcam is opened successfully
-    if not video_capture.isOpened():
-        raise IOError("Cannot open webcam")
-
-    # Capture a frame from the webcam
-    ret, img_original = video_capture.read()
-    video_capture.release()
-
-    if not ret or img_original is None:
-        raise RuntimeError("Failed to capture image from webcam.")
-
-    frame = np.array(img_original)
-
-    # Convert to grayscale
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    # Apply Contrast Limited Adaptive Histogram Equalization (CLAHE)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-
-    # Optional: Resize to match training size
-    resized = cv2.resize(enhanced, (416, 416))  # Match training resolution
-
-    inference_img = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
-
-    results = trained(inference_img)
-    read_code = ''.join(
-        [x['name'] for x in sorted(results[0].summary(), key=lambda x: x['box']['x1'])]
-    )
-    logger.info('Read code from token: %s', read_code)
-    if len(read_code) != 6:
-        raise ValueError('Invalid code length')
-
-    return read_code
-
-
-# def get_token_code():
-#     return input('Enter code:')
+    code = _reader.read()  # raises TimeoutError if no stable code emerges
+    logger.info("Read code from token: %s", code)
+    return code

@@ -1,5 +1,7 @@
 beautifulsoup4
 PyYAML
+playwright
 pytest-playwright
+python-dotenv
 torch
 ultralytics
