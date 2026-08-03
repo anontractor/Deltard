@@ -29,8 +29,13 @@ MAX_TOKEN_ATTEMPTS = 3
 TOKEN_ROTATION_WAIT_S = 35
 ELEMENT_TIMEOUT_MS = 30_000
 SETTLE_S = 1.5        # let post-render JS handlers bind before interacting
-TRANSITION_TIMEOUT_S = 25
+# RSA validation round-trips to an on-prem Authentication Manager before the
+# WS-Fed redirect, and has been observed taking >25s. Too short a wait here
+# reads a slow success as a failure.
+TRANSITION_TIMEOUT_S = 90
+UNKNOWN_PAGE_TIMEOUT_S = 60  # give up on an unrecognised page rather than spin
 
+TRUST_TITLE = "#appConfirmTitle"
 OKTA_FORM = 'form[data-se="o-form"]'
 OKTA_PASSCODE = 'input[name="credentials.passcode"]'
 OKTA_SUBMIT = 'input[type="submit"]'
@@ -134,7 +139,13 @@ def _handle_okta_rsa(page: Page, config: dict):
         if result == "advanced":
             return
         if result == "stalled":
-            raise RuntimeError("Okta did not respond to the passcode submission.")
+            # Don't call it a failure — the submission may still be in flight.
+            # Hand back to the main loop, which re-detects the page; if we're
+            # still on the RSA prompt it will land here again, and the overall
+            # login budget bounds how many passcodes we can burn.
+            logger.warning("No response %ss after submitting; letting the main "
+                           "loop re-check the page.", TRANSITION_TIMEOUT_S)
+            return
 
         logger.warning("RSA passcode rejected; waiting for the token to rotate...")
         time.sleep(TOKEN_ROTATION_WAIT_S)
@@ -148,6 +159,50 @@ def _handle_kmsi(page: Page, config: dict):
     page.wait_for_load_state("domcontentloaded")
 
 
+def _handle_trust_prompt(page: Page, config: dict):
+    """Microsoft's "Do you trust <domain>?" account confirmation."""
+    logger.info("'Do you trust' confirmation — clicking Continue.")
+    # This page has a Cancel button too, and clicking it aborts the sign-in —
+    # so match Continue by its accessible name and only fall back to the
+    # primary-button id, never to "whatever button is first".
+    button = page.get_by_role("button", name="Continue")
+    if not button.count():
+        button = page.locator("#idSIButton9")
+    button.first.wait_for(state="visible", timeout=ELEMENT_TIMEOUT_MS)
+    button.first.click()
+    page.wait_for_load_state("domcontentloaded")
+
+
+def _describe_page(page: Page) -> str:
+    """Compact description of an unrecognised page, for the log. Whatever this
+    prints is what you need to write the next detector, so keep it specific."""
+    try:
+        bits = [f"url={page.url}", f"title={page.title()!r}"]
+        headings = page.locator("h1, h2, [role='heading']")
+        texts = []
+        for i in range(min(headings.count(), 4)):
+            text = (headings.nth(i).inner_text() or "").strip().replace("\n", " ")
+            if text:
+                texts.append(text[:60])
+        if texts:
+            bits.append("headings=[" + " | ".join(texts) + "]")
+
+        buttons = page.locator(
+            "button:visible, input[type=submit]:visible, input[type=button]:visible"
+        )
+        labels = []
+        for i in range(min(buttons.count(), 6)):
+            el = buttons.nth(i)
+            label = ((el.inner_text() or "") or (el.get_attribute("value") or "")).strip()
+            el_id = el.get_attribute("id")
+            labels.append(f"{label[:24]!r}" + (f"#{el_id}" if el_id else ""))
+        if labels:
+            bits.append("buttons=[" + ", ".join(labels) + "]")
+        return "; ".join(bits)
+    except Exception as exc:
+        return f"(could not describe page: {type(exc).__name__})"
+
+
 def _detect(page: Page) -> str | None:
     # Order matters: the MS email page also contains #idSIButton9.
     if _visible(page, 'input[name="loginfmt"]'):
@@ -158,6 +213,17 @@ def _detect(page: Page) -> str | None:
         return "okta_password"
     if "securid" in heading:
         return "okta_rsa"
+
+    # "Do you trust <domain>?" — appears after federated sign-in, typically on a
+    # profile Microsoft doesn't recognise yet. Shares #idSIButton9 with the KMSI
+    # page, so key on its own heading; the two are otherwise disjoint.
+    try:
+        title = page.locator(TRUST_TITLE)
+        if title.count() and title.first.is_visible():
+            if "do you trust" in title.first.inner_text().strip().lower():
+                return "trust_prompt"
+    except Exception:
+        pass
 
     try:
         if page.get_by_text("Stay signed in?").count() and _visible(page, "#idSIButton9"):
@@ -171,6 +237,7 @@ _HANDLERS = {
     "ms_email": _handle_ms_email,
     "okta_password": _handle_okta_password,
     "okta_rsa": _handle_okta_rsa,
+    "trust_prompt": _handle_trust_prompt,
     "kmsi": _handle_kmsi,
 }
 
@@ -179,6 +246,8 @@ def login(page: Page, config: dict, timeout_s: int = 300):
     """Drive the login flow until we land on Unanet. Idempotent per state."""
     deadline = time.time() + timeout_s
     last_state = None
+    unknown_since = None
+    unknown_url = None
 
     while time.time() < deadline:
         try:
@@ -197,6 +266,20 @@ def login(page: Page, config: dict, timeout_s: int = 300):
             if state != last_state:
                 logger.info("Login state: %s", state)
             _HANDLERS[state](page, config)
+            unknown_since = unknown_url = None
+        else:
+            # An unrecognised page used to spin here silently until the overall
+            # timeout, leaving only a screenshot. Describe it once per URL, then
+            # give up quickly — the message carries what a new detector needs.
+            if page.url != unknown_url:
+                unknown_url = page.url
+                logger.warning("No handler for this page — %s", _describe_page(page))
+            if unknown_since is None:
+                unknown_since = time.time()
+            elif time.time() - unknown_since > UNKNOWN_PAGE_TIMEOUT_S:
+                raise RuntimeError(f"Stuck on an unhandled page: {_describe_page(page)}")
         last_state = state
 
-    raise TimeoutError(f"Login did not complete within {timeout_s} seconds.")
+    raise TimeoutError(
+        f"Login did not complete within {timeout_s} seconds. Last page: {_describe_page(page)}"
+    )

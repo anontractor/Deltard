@@ -7,6 +7,7 @@ project_name_rN / paycode_name_rN and day cells d_rN_C, where column C is the
 
 import re
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from playwright.sync_api import Page, TimeoutError as PWTimeoutError
@@ -17,12 +18,29 @@ PERIOD_RE = re.compile(r"\((\d{1,2}/\d{1,2}/\d{4}) - (\d{1,2}/\d{1,2}/\d{4})\)")
 GRID = "table#timesheet"
 
 
+@dataclass
+class FillResult:
+    changed: bool           # cells were written and saved
+    is_final_weekday: bool  # today is the last workday of the period
+
+
 def _parse_date(text: str) -> date:
     return datetime.strptime(text, "%m/%d/%Y").date()
 
 
 def _as_date(value) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value))
+
+
+def _final_weekday(period_end: date, period_start: date, holidays: set) -> date | None:
+    """Last working day of the period: walk back from the end past weekends and
+    holidays. The period may end on a weekend, so this is not always period_end."""
+    day = period_end
+    while day >= period_start:
+        if day.weekday() < 5 and day not in holidays:
+            return day
+        day -= timedelta(days=1)
+    return None
 
 
 def _grid_present(page: Page) -> bool:
@@ -68,10 +86,9 @@ def _cell_value(page: Page, row: int, col: int) -> str:
     return (loc.first.input_value() or "").strip()
 
 
-def fill_timesheet(page: Page, config: dict) -> bool:
+def fill_timesheet(page: Page, config: dict) -> FillResult:
     """Fill HOURS_PER_DAY into the target project row for every empty,
-    uncovered weekday from the period start through today. Returns True if
-    anything was changed and saved."""
+    uncovered weekday from the period start through today."""
     hours = str(config.get("HOURS_PER_DAY", "8"))
     holidays = {_as_date(d) for d in (config.get("HOLIDAYS") or [])}
 
@@ -81,6 +98,11 @@ def fill_timesheet(page: Page, config: dict) -> bool:
     period_start, period_end = _parse_date(match.group(1)), _parse_date(match.group(2))
     today = date.today()
     logger.info("Timesheet period %s - %s.", period_start, period_end)
+
+    final_weekday = _final_weekday(period_end, period_start, holidays)
+    is_final_weekday = final_weekday is not None and today == final_weekday
+    if is_final_weekday:
+        logger.info("Today is the final workday of the period — submission is due.")
 
     rows = _project_rows(page)
     target_project = config["UNANET_PROJECT"]
@@ -114,7 +136,7 @@ def fill_timesheet(page: Page, config: dict) -> bool:
 
     if not filled:
         logger.info("Nothing to fill — timesheet already up to date.")
-        return False
+        return FillResult(changed=False, is_final_weekday=is_final_weekday)
 
     logger.info("Saving timesheet (%s day(s) filled).", len(filled))
     page.locator("#button_save").click()
@@ -130,4 +152,4 @@ def fill_timesheet(page: Page, config: dict) -> bool:
             raise RuntimeError(f"Cell for {day} is empty after save — manual check needed.")
 
     logger.info("Saved: %s", ", ".join(str(day) for _, day in filled))
-    return True
+    return FillResult(changed=True, is_final_weekday=is_final_weekday)

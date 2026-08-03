@@ -9,6 +9,10 @@ UNANET_PAYCODE: "****REG"
 
 HOURS_PER_DAY: "8"
 
+# Exit immediately on Sat/Sun without opening a browser. Set true only if you
+# want weekend runs to backfill the week (--force does it as a one-off).
+RUN_ON_WEEKENDS: false
+
 # Weekdays to skip when backfilling (company observed holidays).
 HOLIDAYS: []
 
@@ -18,6 +22,8 @@ HOLIDAYS: []
 NOTIFY:
   channel: ntfy            # ntfy | email | none
   notify_on_success: true  # also ping on success, so silence means "didn't run"
+  remind_on_final_weekday: true  # loud alert on the period's last workday —
+                                 # the script never submits, so that's on you
   ntfy:
     server: "https://ntfy.sh"
     # Topic lives in secrets.env as NTFY_TOPIC — it is the only access control

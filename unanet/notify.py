@@ -48,11 +48,15 @@ def _send_ntfy(config: dict, title: str, body: str, urgent: bool):
         raise ValueError("NTFY_TOPIC is not set in secrets.env")
 
     server = (settings.get("server") or "https://ntfy.sh").rstrip("/")
+    # ntfy takes the title as an HTTP header, and headers are latin-1 encoded —
+    # a stray em dash or emoji in the title would raise from inside http.client.
+    # The body is fine: it's UTF-8 encoded bytes.
+    safe_title = title.encode("ascii", "replace").decode("ascii")
     request = urllib.request.Request(
         f"{server}/{topic}",
         data=body.encode("utf-8"),
         headers={
-            "Title": title,
+            "Title": safe_title,
             "Priority": "high" if urgent else "low",
             "Tags": "rotating_light" if urgent else "white_check_mark",
         },

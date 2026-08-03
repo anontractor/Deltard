@@ -192,7 +192,7 @@ channel in `config.yaml` under `NOTIFY`:
 
 Alerts are deliberately content-free — "Autofill automation FAILED", nothing
 more. Diagnostics stay local in `automation.log` and `last_failure.png`. Test
-before relying on it:
+each of the three before relying on them:
 
 ```bash
 venv\Scripts\python.exe run_unanet.py --test-notify
@@ -202,8 +202,24 @@ venv\Scripts\python.exe run_unanet.py --test-notify
 venv\Scripts\python.exe run_unanet.py --test-notify fail
 ```
 
+```bash
+venv\Scripts\python.exe run_unanet.py --test-notify final
+```
+
 Success notifications are on by default, which is deliberate: if you get one
 every workday, a *missing* one is itself the alert.
+
+**The submit reminder** (`remind_on_final_weekday`) is the third alert and the
+one that saves you. This script fills and saves but **never submits** — clicking
+Submit sends the timesheet to your approver, and no automation should do that on
+your behalf. So on the period's last working day it sends a high-priority
+"action needed" alert instead of the routine OK ping. That day is computed by
+walking back from the period end past weekends and any configured `HOLIDAYS`, so
+a period ending on a weekend, or on a holiday Friday, still lands on the right
+day.
+
+Note this only fires if the script actually runs that day. Pair it with
+`HEALTHCHECK_URL` below so a missed run is caught independently.
 
 Optionally set `HEALTHCHECK_URL` to a [healthchecks.io](https://healthchecks.io/)
 ping URL. The script pings on success and failure, and the service alerts you if
@@ -226,9 +242,14 @@ Then, in Windows Task Scheduler:
 **B.** Action → Create task. Name it, and decide whether it should run while
 you're logged off (recommended). No elevated privileges required.
 
-**C. Trigger** — Triggers tab → New. "On a schedule", Weekly, check each
-weekday. Checking "Delay task for up to" varies the actual run time, which also
-avoids hammering the site at a predictable second.
+**C. Trigger** — Triggers tab → New. Choose **Weekly** (not Daily) and tick
+Monday–Friday. Daily has no day-of-week filter, so it's the usual reason a task
+fires on a Sunday. Checking "Delay task for up to" varies the actual run time,
+which also avoids hammering the site at a predictable second.
+
+Belt and braces: the script also exits immediately on Sat/Sun before opening a
+browser, so a misconfigured trigger costs nothing. Override with `--force`, or
+set `RUN_ON_WEEKENDS: true` if you'd rather weekend runs backfill the week.
 
 **D. Action** — Actions tab → New → "Start a program".
 * Program/script: the *entire* path to `run.bat`
